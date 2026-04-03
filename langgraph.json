@@ -1,0 +1,13 @@
+{
+  "node_version": "20",
+  "graphs": {
+    "agent":  "./src/agents/practices/first-agent.ts:firstAgent",
+    "second": "./src/agents/practices/second-agent.ts:secondAgent",
+    "rag":    "./src/agents/practices/rag-agent.ts:rag",
+    "code_review": "./src/agents/practices/code_review.ts:code_review",
+    "orchestrator": "./src/agents/practices/orchestrator.ts:orchestrator_agent",
+    "evaluator_agent": "./src/agents/practices/evaluator.ts:evaluator_agent",
+    "support": "./src/agents/support/agent.ts:ragAgent"
+  },
+  "env": ".env"
+}

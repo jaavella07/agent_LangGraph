@@ -1,0 +1,28 @@
+{
+  "name": "agent-ia",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@langchain/core": "^1.1.38",
+    "@langchain/langgraph": "^1.2.1",
+    "@langchain/langgraph-supervisor": "^1.0.1",
+    "@langchain/openai": "^1.2.12",
+    "@types/nunjucks": "^3.2.6",
+    "chokidar": "^3.6.0",
+    "langchain": "^1.2.30",
+    "nunjucks": "^3.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}

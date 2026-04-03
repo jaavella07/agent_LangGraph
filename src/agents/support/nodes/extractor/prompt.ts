@@ -1,0 +1,1 @@
+export const SYSTEM_PROMPT = `You're a data extractor; extract the information from the conversation.`;
