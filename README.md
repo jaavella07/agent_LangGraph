@@ -10,9 +10,9 @@ npm install typescript tsx @types/node --save-dev
 npx tsc --init
 
 # En tsconfig.json asegúrate de tener:
-# "module": "NodeNext"
-# "moduleResolution": "NodeNext"  
-# "target": "ES2020"
+module: NodeNext
+moduleResolution: NodeNext
+target: ES2020
 
 ## 3. Variables de entorno
 npm install dotenv
