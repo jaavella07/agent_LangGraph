@@ -12,6 +12,7 @@ Ruta de aprendizaje progresiva para construir agentes conversacionales con [Lang
 |------|------|----------------------|
 | 0 | Fundamentos y vocabulario | — |
 | 1 | Setup del proyecto | `package.json`, `tsconfig.json`, `langgraph.json` |
+| 1B | Modelos locales con Ollama (sin API keys) | — |
 | 2 | Primer agente: ReAct + tools | `src/agents/practices/first-agent.ts` |
 | 3 | StateGraph personalizado y estado | `src/agents/practices/second-agent.ts` |
 | 4 | Salida estructurada y RAG | `src/agents/practices/rag-agent.ts` |
@@ -157,6 +158,110 @@ mi-agente/
 ```
 
 ✅ **Antes de avanzar deberías poder:** ejecutar `npx tsx src/main.ts` sin errores y ver tus grafos en LangGraph Studio.
+
+---
+
+## Fase 1B — Modelos locales con Ollama (evitar pagar API keys)
+
+**Objetivo:** ejecutar los mismos agentes de este repo contra un modelo que corre en tu propia máquina, sin depender de `OPENAI_API_KEY` ni de costo por token. Esta fase es **opcional** y se puede aplicar en cualquier momento a partir de la Fase 2 — cambia el proveedor del LLM, no la lógica de los grafos.
+
+**Concepto clave:** [Ollama](https://ollama.com) es un runtime que descarga y sirve LLMs open-weight (Llama, Qwen, Mistral, etc.) localmente vía una API HTTP en `http://localhost:11434`. El paquete `@langchain/ollama` expone `ChatOllama`, que implementa el mismo contrato que `ChatOpenAI` — en la mayoría de nodos de este repo es un reemplazo directo, solo cambiando el import y el constructor.
+
+### 1B.1 Instalar Ollama
+
+- **Windows / macOS:** descarga el instalador desde https://ollama.com/download y ejecútalo. Queda corriendo como servicio en segundo plano (`ollama serve`).
+- **macOS con Homebrew:** `brew install ollama`
+- **Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
+
+Verifica que el servicio está arriba:
+
+```bash
+ollama --version
+ollama list          # modelos descargados (vacío la primera vez)
+```
+
+### 1B.2 Descargar un modelo con soporte de tool calling
+
+Este repo usa `tool calling` y `withStructuredOutput` en casi todas las fases (2, 4, 5, 6), así que elige un modelo certificado para eso — no todos los modelos de Ollama lo soportan bien:
+
+```bash
+ollama pull llama3.1        # 8B, buen equilibrio calidad/velocidad, soporta tools
+# alternativas: qwen2.5, mistral-nemo, firefunction-v2
+```
+
+Hardware orientativo: ~8 GB de RAM libres para un modelo de 8B en cuantización por defecto (con GPU/VRAM dedicada corre más rápido, pero no es obligatorio).
+
+Pruébalo desde la terminal antes de tocar código:
+
+```bash
+ollama run llama3.1
+>>> Hola, preséntate en una frase.
+```
+
+### 1B.3 Instalar el paquete de LangChain para Ollama
+
+```bash
+npm install @langchain/ollama
+```
+
+### 1B.4 Reemplazar el proveedor en el código
+
+Cualquier `new ChatOpenAI({ model: "gpt-4o-mini" })` de este repo se cambia por:
+
+```ts
+import { ChatOllama } from "@langchain/ollama";
+
+const model = new ChatOllama({
+  model: "llama3.1",
+  baseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434", // valor por defecto
+});
+```
+
+Ejemplo aplicado a [first-agent.ts](src/agents/practices/first-agent.ts) (Fase 2), sin ninguna API key configurada:
+
+```ts
+import { ChatOllama } from "@langchain/ollama";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+
+const model = new ChatOllama({ model: "llama3.1" });
+
+const weatherTool = tool(async ({ city }) => `Sunny in ${city}`, {
+  name: "get_weather",
+  schema: z.object({ city: z.string() }),
+});
+
+export const firstAgent = createReactAgent({ llm: model, tools: [weatherTool] });
+```
+
+### 1B.5 Variable de entorno opcional
+
+```bash
+# .env
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+### 1B.6 Elegir el proveedor dinámicamente (opcional)
+
+`langchain` incluye `initChatModel`, que resuelve el proveedor a partir de un string — útil para no hardcodear `ChatOpenAI` vs `ChatOllama` en cada archivo y alternar entre ambos con una variable de entorno:
+
+```ts
+import { initChatModel } from "langchain/chat_models/universal";
+
+const model = await initChatModel(
+  process.env.LLM_MODEL ?? "ollama:llama3.1"   // o "openai:gpt-4o-mini"
+);
+```
+
+### 1B.7 Limitaciones a tener en cuenta
+
+- **Salida estructurada y tool calling** dependen del modelo: modelos pequeños (<7B) suelen fallar esquemas zod con varios campos anidados (afecta el extractor de la Fase 4, los revisores de la Fase 5 y el router de la Fase 6). Empieza con `llama3.1:8b` o `qwen2.5:7b` antes de probar modelos más chicos.
+- **`file_search`** (Fase 4) es una tool nativa de OpenAI — no existe en Ollama; para RAG local necesitarías tu propio retriever (embeddings + vector store) en vez de esa tool.
+- **Velocidad:** sin GPU la latencia por respuesta es notablemente mayor que con la API de OpenAI — aceptable para estudio, no ideal para producción con mucha concurrencia.
+- Puedes **mezclar proveedores** dentro del mismo grafo: por ejemplo `ChatOllama` en el nodo de conversación simple y `ChatOpenAI` solo donde necesites `file_search`.
+
+✅ **Antes de avanzar deberías poder:** correr `first-agent.ts` (Fase 2) usando `ChatOllama` en vez de `ChatOpenAI`, sin ninguna API key configurada, y explicar en qué fases del repo podría fallar un modelo local pequeño.
 
 ---
 
@@ -577,6 +682,10 @@ curl -X POST http://localhost:8000/chat/prueba-1 \
 | `npx tsx src/archivo.ts` | ejecutar cualquier script suelto |
 | `npx @langchain/langgraph-cli dev` | LangGraph Studio (visualizar y depurar grafos) |
 | `npx tsc` | build de producción a `dist/` |
+| `ollama serve` | levantar el servicio de Ollama (normalmente ya corre como background service) |
+| `ollama pull <modelo>` | descargar un modelo local (Fase 1B) |
+| `ollama list` | ver modelos descargados |
+| `ollama rm <modelo>` | borrar un modelo local y liberar espacio |
 
 ### Debugging
 
