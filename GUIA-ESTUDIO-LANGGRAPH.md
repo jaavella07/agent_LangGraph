@@ -13,6 +13,7 @@ Ruta de aprendizaje progresiva para construir agentes conversacionales con [Lang
 | 0 | Fundamentos y vocabulario | — |
 | 1 | Setup del proyecto | `package.json`, `tsconfig.json`, `langgraph.json` |
 | 1B | Modelos locales con Ollama (sin API keys) | — |
+| 1C | Agente básico sin tool calling (Nivel 0) | — (no existe en el repo, construido en esta guía) |
 | 2 | Primer agente: ReAct + tools | `src/agents/practices/first-agent.ts` |
 | 3 | StateGraph personalizado y estado | `src/agents/practices/second-agent.ts` |
 | 4 | Salida estructurada y RAG | `src/agents/practices/rag-agent.ts` |
@@ -262,6 +263,144 @@ const model = await initChatModel(
 - Puedes **mezclar proveedores** dentro del mismo grafo: por ejemplo `ChatOllama` en el nodo de conversación simple y `ChatOpenAI` solo donde necesites `file_search`.
 
 ✅ **Antes de avanzar deberías poder:** correr `first-agent.ts` (Fase 2) usando `ChatOllama` en vez de `ChatOpenAI`, sin ninguna API key configurada, y explicar en qué fases del repo podría fallar un modelo local pequeño.
+
+---
+
+## Fase 1C — Agente básico sin tool calling (Nivel 0)
+
+> 📌 Este apartado **no existe en el repo actual** — se construye aquí desde cero como escalón didáctico. Es el punto de partida más simple posible y la opción que sigue funcionando incluso cuando el modelo (por ejemplo, un modelo pequeño de Ollama) **no soporta tool calling** — la limitación que se menciona en 1B.7.
+
+**Objetivo:** construir el agente conversacional más simple posible — sin `bindTools`, sin `withStructuredOutput`, sin `createReactAgent` — para entender la base sobre la que se construye todo lo demás en esta guía.
+
+**Concepto clave — niveles de capacidad de un agente:**
+
+| Nivel | Capacidad | Requiere del modelo | Fase de esta guía |
+|---|---|---|---|
+| **0** | Conversación simple: prompt + historial → respuesta | Ninguna especial (cualquier LLM, incluso muy pequeño) | **Esta fase** |
+| 1 | Tool calling nativo: el modelo decide llamar funciones | Soporte de function/tool calling | Fase 2 |
+| 2 | Salida estructurada, extracción, RAG | Tool calling + JSON schema | Fase 4 |
+| 3 | Orquestación multi-nodo, paralelismo, ciclos | — | Fase 5 |
+| 4 | Multi-agente, memoria persistente, API | — | Fases 6-8 |
+
+Un agente de **Nivel 0** no toma decisiones ni actúa sobre el mundo — es un chatbot con estado. Pero es la base real: cada nodo de este repo que hace `model.invoke(mensajes)` sin tools (por ejemplo, el nodo `conversation` de la Fase 6) es, en el fondo, un paso de Nivel 0.
+
+### 1C.1 El grafo mínimo: un nodo, sin tools
+
+```ts
+import { END, START, StateGraph, MessagesAnnotation } from "@langchain/langgraph";
+import { SystemMessage } from "@langchain/core/messages";
+import { ChatOpenAI } from "@langchain/openai";
+
+// Nivel 0: MessagesAnnotation ya trae lo necesario, no hace falta extender el estado
+const model = new ChatOpenAI({ model: "gpt-4o-mini" });
+// o const model = new ChatOllama({ model: "llama3.2" }); — sirve igual, ningún modelo
+// necesita soportar tool calling para este nodo
+
+const SYSTEM_PROMPT = "Eres un asistente breve y directo. Responde siempre en español.";
+
+async function chatNode(state: typeof MessagesAnnotation.State) {
+  const response = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    ...state.messages,
+  ]);
+  return { messages: [response] };
+}
+
+const builder = new StateGraph(MessagesAnnotation)
+  .addNode("chat", chatNode)
+  .addEdge(START, "chat")
+  .addEdge("chat", END);
+
+export const basicAgent = builder.compile();
+```
+
+Ejecutarlo:
+
+```ts
+const result = await basicAgent.invoke({
+  messages: [{ role: "user", content: "¿Qué es LangGraph?" }],
+});
+console.log(result.messages.at(-1)?.content);
+```
+
+No hay `tool()`, no hay `zod`, no hay `bindTools`. Compáralo con [first-agent.ts](src/agents/practices/first-agent.ts) (Fase 2): la diferencia estructural es únicamente que allí `createReactAgent` arma el nodo internamente y sí registra tools.
+
+### 1C.2 Memoria conversacional sin checkpointer
+
+Antes de llegar al checkpointer real (Fase 7), la forma más simple de "recordar" es acumular el historial en una variable del proceso y volver a invocar el grafo con él completo:
+
+```ts
+import { BaseMessage, HumanMessage } from "@langchain/core/messages";
+
+let history: BaseMessage[] = [];
+
+async function ask(question: string) {
+  history.push(new HumanMessage(question));
+  const result = await basicAgent.invoke({ messages: history });
+  history = result.messages;
+  return history.at(-1)?.content;
+}
+```
+
+Es memoria "manual" en RAM del proceso — se pierde al reiniciar. Es el escalón conceptual justo antes de `MemorySaver` / `PostgresSaver`.
+
+### 1C.3 Simular "acciones" sin tool calling nativo (ReAct manual por texto)
+
+Antes de que los LLMs soportaran tool calling nativo, el patrón ReAct se implementaba pidiéndole al modelo que **describiera en texto plano** la acción que quería ejecutar, y el código parseaba esa respuesta con una convención de formato. Es la técnica a usar cuando el modelo es de Nivel 0 (sin tool calling) pero igual necesitas que "actúe" — típico en modelos chicos de Ollama:
+
+```ts
+const REACT_PROMPT = `
+Puedes responder directamente o pedir una acción. Si necesitas el clima de una ciudad,
+responde EXACTAMENTE en este formato, sin nada más:
+ACTION: get_weather(<ciudad>)
+
+Si ya tienes la información para responder, responde normalmente en español.
+`;
+
+function parseAction(text: string): { tool: string; arg: string } | null {
+  const match = text.match(/^ACTION:\s*(\w+)\((.+)\)$/);
+  return match ? { tool: match[1], arg: match[2] } : null;
+}
+
+async function chatNode(state: typeof MessagesAnnotation.State) {
+  const response = await model.invoke([
+    new SystemMessage(REACT_PROMPT),
+    ...state.messages,
+  ]);
+
+  const action = parseAction(String(response.content).trim());
+  if (action?.tool === "get_weather") {
+    const observation = `Sunny in ${action.arg}`; // aquí ejecutarías la función real
+
+    // Reinyectamos la observación como si fuera el resultado de una tool call
+    const finalResponse = await model.invoke([
+      new SystemMessage(REACT_PROMPT),
+      ...state.messages,
+      response,
+      new HumanMessage(`Resultado: ${observation}. Ahora responde al usuario.`),
+    ]);
+    return { messages: [response, finalResponse] };
+  }
+
+  return { messages: [response] };
+}
+```
+
+Esto es, a mano, lo que `createReactAgent` (Fase 2) automatiza **cuando el modelo soporta tool calling nativo** — con la ventaja de que ahí el formato viene garantizado por un JSON schema en vez de depender de que el modelo respete al pie de la letra un formato de texto libre.
+
+⚠️ **Por qué es frágil:** el modelo puede no seguir el formato exacto (agregar texto extra, cambiar mayúsculas, olvidar paréntesis), y el `regex` de `parseAction` fallará silenciosamente. Por eso este patrón casi no se usa con modelos grandes hoy — pero sigue siendo la única opción viable con:
+- modelos muy pequeños de Ollama sin soporte de tools,
+- proveedores que no exponen function calling,
+- modelos legacy o fine-tunes propios.
+
+### 1C.4 Cuándo subir al Nivel 1 (Fase 2)
+
+En cuanto tu modelo soporte tool calling (revisa la ficha del modelo en Ollama, o usa cualquier modelo reciente de OpenAI/Anthropic), prefiere siempre `tool()` + `createReactAgent`/`bindTools` sobre el parseo manual: es más confiable, viene tipado con `zod`, y es exactamente lo que ya usa este repo desde la Fase 2 en adelante.
+
+✅ **Antes de avanzar deberías poder:**
+- Construir un grafo de un solo nodo que solo invoca al modelo, sin ninguna tool.
+- Explicar la diferencia entre un agente de Nivel 0 (conversación) y uno de Nivel 1 (tool calling).
+- Explicar por qué el parseo manual de acciones es más frágil que el tool calling nativo, y en qué casos igual es la única opción.
 
 ---
 
