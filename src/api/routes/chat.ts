@@ -1,9 +1,20 @@
 import { Router, Request, Response } from "express";
 import { HumanMessage } from "@langchain/core/messages";
 import { getCheckpointer } from "../db";
-import { ragAgent } from "../../agents/support/agent";
+import { makeGraph } from "../../agents/support/agent";
 
 const router = Router();
+
+// El grafo debe compilarse con el PostgresSaver; se construye perezosamente
+// porque el checkpointer solo existe después de initCheckpointer() en main.ts
+let _agent: ReturnType<typeof makeGraph> | null = null;
+
+function getAgent() {
+  if (!_agent) {
+    _agent = makeGraph({ checkpointer: getCheckpointer() });
+  }
+  return _agent;
+}
 
 
 router.post("/:chatId", async (req: Request, res: Response) => {
@@ -14,8 +25,7 @@ router.post("/:chatId", async (req: Request, res: Response) => {
     configurable: { thread_id: chatId },
   };
 
-  const checkpointer = getCheckpointer();
-  const agent = ragAgent;
+  const agent = getAgent();
   const humanMessage = new HumanMessage({ content: message });
 
   const response = await agent.invoke(
@@ -41,8 +51,7 @@ router.post("/:chatId/stream", async (req: Request, res: Response) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  const checkpointer = getCheckpointer();
-  const agent = ragAgent;
+  const agent = getAgent();
   const humanMessage = new HumanMessage({ content: message });
 
   const stream = await agent.stream(
